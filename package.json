@@ -1,0 +1,17 @@
+{
+  "name": "oneleap-agent",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "dev": "node main.js",
+    "start": "node main.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "playwright": "^1.62.1"
+  }
+}

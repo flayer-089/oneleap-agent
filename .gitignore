@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Data / output (lead data, Excel files, screenshots, logs)
+output/
+
+# Chrome profile (contains your login session/cookies - DO NOT commit)
+browser-data/
+
+# Secrets (will be created during the app build)
+config/auth.json
+.env
+
+# Logs
+*.log
