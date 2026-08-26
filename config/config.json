@@ -3,5 +3,6 @@
   "delayMinMs": 3000,
   "delayMaxMs": 8000,
   "countryFilterEnabled": true,
-  "messageTemplate": "Hi {{name}}, always interested in connecting with founders building interesting things across different industries. Would love to hear about your journey and what you're working on, what's been the most exciting part of building it? Are you attending LEAP this year?"
+  "messageTemplate": "Hi {{name}}, always interested in connecting with founders building interesting things across different industries. Would love to hear about your journey and what you're working on, what's been the most exciting part of building it? Are you attending LEAP this year?",
+  "googleSheetUrl": "https://docs.google.com/spreadsheets/d/1n3AM9cd9NiL3zOqAv-w_ITS90QAY9CYJJnWRzZvgaAk/edit"
 }

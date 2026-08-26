@@ -166,5 +166,6 @@ module.exports = {
   personIdFromHref,
   getContactPeople,
   scrollContactsToLoadMore,
+  scrollProfileToBottom,
   scrapeContactDetails
 };

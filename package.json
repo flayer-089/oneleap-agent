@@ -1,10 +1,12 @@
 {
   "name": "oneleap-agent",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
-    "dev": "node main.js",
-    "start": "node main.js"
+    "start": "node server.js",
+    "dev": "node server.js",
+    "connections": "node main.js",
+    "monitor": "node monitor.js"
   },
   "keywords": [],
   "author": "",
@@ -12,6 +14,9 @@
   "description": "",
   "dependencies": {
     "exceljs": "^4.4.0",
+    "express": "^4.22.2",
+    "express-session": "^1.19.0",
+    "googleapis": "^176.0.0",
     "playwright": "^1.62.1"
   }
 }

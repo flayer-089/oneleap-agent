@@ -10,7 +10,7 @@ async function openConnectionModal(page, person, connectButton) {
   // button, which is often hidden until the card is hovered.
   if (person && person.href) {
     const href = person.href.startsWith('http') ? person.href : BASE_URL + person.href;
-    await page.goto(`${href}?openConnection=true`, { waitUntil: 'domcontentloaded' })
+    await page.goto(`${href}?openConnection=true`, { waitUntil: 'domcontentloaded', timeout: 30000 })
       .catch((e) => console.log(`[CONNECT] goto error: ${e.message}`));
   } else if (connectButton) {
     await connectButton.hover().catch(() => {});

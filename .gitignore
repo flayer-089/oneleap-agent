@@ -9,6 +9,8 @@ browser-data/
 
 # Secrets (will be created during the app build)
 config/auth.json
+config/google-service-account.json
+config/google-credentials.json
 .env
 
 # Logs

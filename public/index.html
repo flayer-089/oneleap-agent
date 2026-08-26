@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OneLeap Agent</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Login -->
+  <div id="login" class="login hidden">
+    <div class="login-card">
+      <h1>OneLeap Agent</h1>
+      <input id="email" type="email" placeholder="Email" autocomplete="username">
+      <input id="password" type="password" placeholder="Password" autocomplete="current-password">
+      <button id="login-btn">Login</button>
+      <div id="login-error" class="error"></div>
+    </div>
+  </div>
+
+  <!-- App -->
+  <div id="app" class="hidden">
+    <header>
+      <h1>OneLeap Agent</h1>
+      <nav>
+        <button class="tab active" data-tab="run">Run</button>
+        <button class="tab" data-tab="analytics">Analytics</button>
+        <button class="tab" data-tab="data">Data</button>
+      </nav>
+      <button id="logout-btn" class="logout">Logout</button>
+    </header>
+
+    <main>
+      <!-- Run tab -->
+      <section id="tab-run" class="tab-panel active">
+        <div class="status-bar">
+          <span id="cdp-status" class="pill">Chrome: ...</span>
+          <span id="job-status" class="pill">Idle</span>
+        </div>
+
+        <div class="run-controls">
+          <button id="run-connections" class="btn primary">Run Connections</button>
+          <button id="run-monitor" class="btn">Run Monitor</button>
+          <button id="stop-btn" class="btn danger hidden">Stop</button>
+          <button id="ready-btn" class="btn success hidden">Ready</button>
+        </div>
+
+        <div id="summary-box" class="summary hidden"></div>
+
+        <div class="log-container">
+          <div class="log-header">Live log</div>
+          <pre id="log"></pre>
+        </div>
+      </section>
+
+      <!-- Analytics tab -->
+      <section id="tab-analytics" class="tab-panel">
+        <div class="cards">
+          <div class="card"><div class="card-value" id="a-sent">0</div><div class="card-label">Requests Sent</div></div>
+          <div class="card"><div class="card-value" id="a-accepted">0</div><div class="card-label">Accepted</div></div>
+          <div class="card"><div class="card-value" id="a-remaining">0</div><div class="card-label">Remaining</div></div>
+          <div class="card"><div class="card-value" id="a-scraped">0</div><div class="card-label">Contact Details Scraped</div></div>
+        </div>
+
+        <div class="panel">
+          <h2>Last run</h2>
+          <div id="last-run" class="last-run"><div class="muted">No runs yet</div></div>
+        </div>
+
+        <div class="panel">
+          <h2>Status breakdown (leads_log)</h2>
+          <div id="status-breakdown" class="status-breakdown"><div class="muted">-</div></div>
+        </div>
+      </section>
+
+      <!-- Data tab -->
+      <section id="tab-data" class="tab-panel">
+        <div class="panel">
+          <h2>Download</h2>
+          <a id="download-btn" class="btn" href="/download/contacts">Download leads_with_contacts.xlsx</a>
+        </div>
+
+        <div class="panel">
+          <h2>Google Sheets (auto-updated)</h2>
+          <a id="sheet-view-btn" class="btn primary" target="_blank" rel="noopener" style="display:none">View leads with contact data</a>
+          <div class="muted">The monitor writes the full contact list to your Google Sheet after every run.</div>
+          <div class="sheet-setup">
+            <input id="sheet-url" type="text" placeholder="Paste your Google Sheet URL here">
+            <button id="sheet-save-btn" class="btn">Save</button>
+          </div>
+          <div id="sheet-msg" class="muted"></div>
+        </div>
+
+        <div class="panel">
+          <h2>Configuration</h2>
+          <form id="config-form">
+            <label>Session limit <input id="c-sessionLimit" type="number"></label>
+            <label>Delay min (ms) <input id="c-delayMinMs" type="number"></label>
+            <label>Delay max (ms) <input id="c-delayMaxMs" type="number"></label>
+            <label class="checkbox"><input id="c-countryFilterEnabled" type="checkbox"> Country filter enabled</label>
+            <label>Message template <textarea id="c-messageTemplate"></textarea></label>
+            <button type="submit" class="btn primary">Save config</button>
+          </form>
+          <div id="config-msg" class="muted"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
