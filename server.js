@@ -2,6 +2,7 @@ const express = require('express');
 const session = require('express-session');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const { JobManager } = require('./src/jobManager');
 const { startConnections } = require('./src/runConnections');
@@ -15,7 +16,7 @@ const AUTH_PATH = path.join(__dirname, 'config', 'auth.json');
 const CONTACTS_FILE = path.join(__dirname, 'output', 'leads_with_contacts.xlsx');
 
 const PORT = process.env.PORT || 3000;
-const SESSION_SECRET = process.env.SESSION_SECRET || 'oneleap-internal-secret';
+const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 const MONITOR_INTERVAL_MS = 3 * 60 * 60 * 1000;
 
 let config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
