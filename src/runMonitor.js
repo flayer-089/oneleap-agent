@@ -1,6 +1,7 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const ExcelJS = require('exceljs');
 const {
   getContactPeople,
@@ -11,7 +12,15 @@ const {
 } = require('./scrapeContacts');
 const { scrapeProfile } = require('./scrapeProfile');
 const { loadWorkbook, buildIdRowMap, readRow, COLUMNS } = require('./logger');
-const { writeLeadsToSheet, isConfigured } = require('./googleSheets');
+const {
+  readTab,
+  writeTab,
+  acquireRunLock,
+  releaseRunLock,
+  isConfigured,
+  LEADS_LOG_TAB,
+  CONTACTS_TAB
+} = require('./googleSheets');
 const { gotoRetry } = require('./navigation');
 
 const CDP_URL = 'http://localhost:9222';
@@ -92,128 +101,175 @@ async function startMonitor(opts = {}, events = {}) {
     await wb.xlsx.writeFile(OUT_FILE);
   };
 
-  log('[MONITOR] Connecting to Chrome on CDP ' + CDP_URL + ' ...');
-  const browser = await chromium.connectOverCDP(CDP_URL);
-  const context = browser.contexts()[0];
-  const page = await context.newPage();
+  const sheetUrl = readGoogleSheetUrl();
+  const sheetConfigured = sheetUrl && isConfigured(sheetUrl);
+  let lockOwner = null;
+  let browser;
 
-  log('[MONITOR] Navigating to contacts page...');
-  const contactsLoaded = await gotoRetry(page, CONTACTS_URL, log, { retries: 3 });
-  if (!contactsLoaded) {
-    log('[MONITOR] Could not load the contacts page.');
-  }
-  await page.waitForSelector('a[href*="/person/"]', { timeout: 20000 }).catch(() => null);
-  await page.waitForTimeout(2000);
-
-  for (let i = 0; i < 20; i++) {
-    const scrolled = await scrollContactsToLoadMore(page);
-    if (!scrolled) break;
-  }
-
-  const contacts = await getContactPeople(page);
-  log(`[MONITOR] Found ${contacts.length} contacts on the contacts page`);
-
-  const { worksheet } = await loadWorkbook();
-  const idRowMap = buildIdRowMap(worksheet);
-  log(`[MONITOR] Loaded ${idRowMap.size} leads from Excel`);
-
-  const outputRows = await loadOutputRows();
-  const doneIds = new Set(outputRows.map((r) => String(r.uniqueId)));
-  log(`[MONITOR] ${doneIds.size} leads already collected in output file`);
-
-  const matched = contacts.filter((c) => idRowMap.has(c.id) && !doneIds.has(c.id));
-  log(`[MONITOR] ${matched.length} new contacts to process`);
-
-  const toProcess = options.limit ? matched.slice(0, options.limit) : matched;
-
+  let contacts = [];
+  let matched = [];
   let collected = 0;
   let filtered = 0;
   let errored = 0;
   let urlFallback = 0;
-  let consecutiveErrors = 0;
-  let sincePause = 0;
+  let outputRows = [];
 
-  for (const contact of toProcess) {
-    if (shouldStop()) {
-      log('[MONITOR] Stop requested, exiting loop.');
-      break;
-    }
-
-    const personUrl = `${BASE_URL}/event/leap2026/person/${contact.id}`;
-    const ok = await gotoWithRetry(page, personUrl);
-    if (!ok) {
-      errored++;
-      consecutiveErrors++;
-      log(`[MONITOR] Failed to load ${contact.name || '(no name)'} after retries`);
-      if (consecutiveErrors >= options.errorThreshold) {
-        log(`[MONITOR] ${consecutiveErrors} consecutive errors - pausing ${options.errorPauseMs}ms...`);
-        await page.waitForTimeout(options.errorPauseMs);
-        consecutiveErrors = 0;
+  try {
+    if (sheetConfigured) {
+      lockOwner = `${os.hostname()}:monitor:${Date.now()}`;
+      const gotLock = await acquireRunLock(sheetUrl, lockOwner).catch((e) => {
+        log(`[LOCK] Error acquiring lock: ${e.message}`);
+        return false;
+      });
+      if (!gotLock) {
+        throw new Error('Another machine is currently running a job (run-lock held). Refusing to start.');
       }
-      continue;
+      log('[LOCK] Acquired run lock');
     }
-    consecutiveErrors = 0;
 
-    await scrollProfileToBottom(page);
-    await page.waitForTimeout(500);
+    log('[MONITOR] Connecting to Chrome on CDP ' + CDP_URL + ' ...');
+    browser = await chromium.connectOverCDP(CDP_URL);
+    const context = browser.contexts()[0];
+    const page = await context.newPage();
 
-    const profile = await scrapeProfile(page);
+    log('[MONITOR] Navigating to contacts page...');
+    const contactsLoaded = await gotoRetry(page, CONTACTS_URL, log, { retries: 3 });
+    if (!contactsLoaded) {
+      log('[MONITOR] Could not load the contacts page.');
+    }
+    await page.waitForSelector('a[href*="/person/"]', { timeout: 20000 }).catch(() => null);
+    await page.waitForTimeout(2000);
 
-    const details = await scrapeContactDetails(page);
-    const hasData = !!(details.emails.length || details.phones.length || details.location);
-    const value = buildContactDetailsValue(details, personUrl);
-    if (!hasData) urlFallback++;
+    for (let i = 0; i < 20; i++) {
+      const scrolled = await scrollContactsToLoadMore(page);
+      if (!scrolled) break;
+    }
 
-    const row = readRow(idRowMap.get(contact.id));
-    row.type = profile.type || row.type || '';
-    row.seniorityLevel = profile.seniorityLevel || row.seniorityLevel || '';
-    row.companyIdentity = profile.companyIdentity || row.companyIdentity || '';
-    row.companyIndustry = profile.companyIndustry || row.companyIndustry || '';
-    row.industry = profile.industry || row.industry || '';
-    row.sectors = (profile.sectors && profile.sectors.length) ? profile.sectors.join(', ') : (row.sectors || '');
-    row.department = profile.department || row.department || '';
-    row.companyHQ = profile.companyHQ || row.companyHQ || '';
-    row.country = profile.country || row.country || '';
-    row.contactDetails = value;
+    contacts = await getContactPeople(page);
+    log(`[MONITOR] Found ${contacts.length} contacts on the contacts page`);
 
-    if (options.dryRun) {
-      log(`[DRY-RUN] ${row.name || '(no name)'} (${row.uniqueId}) country="${row.country}" -> ${value.replace(/\n/g, ' | ').slice(0, 120)}`);
-    } else {
-      outputRows.push(row);
+    const idRowMap = new Map();
+    const { worksheet } = await loadWorkbook();
+    buildIdRowMap(worksheet).forEach((row, id) => {
+      if (!idRowMap.has(id)) idRowMap.set(id, readRow(row));
+    });
+    if (sheetConfigured) {
+      for (const r of await readTab(sheetUrl, LEADS_LOG_TAB)) {
+        const id = String(r.uniqueId || '');
+        if (id && id !== 'undefined') idRowMap.set(id, r);
+      }
+    }
+    log(`[MONITOR] Loaded ${idRowMap.size} leads (local + sheet)`);
+
+    const outputMap = new Map();
+    for (const r of await loadOutputRows()) {
+      const id = String(r.uniqueId || '');
+      if (id && id !== 'undefined') outputMap.set(id, r);
+    }
+    if (sheetConfigured) {
+      for (const r of await readTab(sheetUrl, CONTACTS_TAB)) {
+        const id = String(r.uniqueId || '');
+        if (id && id !== 'undefined') outputMap.set(id, r);
+      }
+    }
+    outputRows = [...outputMap.values()];
+    const doneIds = new Set(outputMap.keys());
+    log(`[MONITOR] ${doneIds.size} leads already collected (local + sheet)`);
+
+    matched = contacts.filter((c) => !doneIds.has(c.id));
+    log(`[MONITOR] ${matched.length} new contacts to process`);
+
+    const toProcess = options.limit ? matched.slice(0, options.limit) : matched;
+
+    let consecutiveErrors = 0;
+    let sincePause = 0;
+
+    for (const contact of toProcess) {
+      if (shouldStop()) {
+        log('[MONITOR] Stop requested, exiting loop.');
+        break;
+      }
+
+      const personUrl = `${BASE_URL}/event/leap2026/person/${contact.id}`;
+      const ok = await gotoWithRetry(page, personUrl);
+      if (!ok) {
+        errored++;
+        consecutiveErrors++;
+        log(`[MONITOR] Failed to load ${contact.name || '(no name)'} after retries`);
+        if (consecutiveErrors >= options.errorThreshold) {
+          log(`[MONITOR] ${consecutiveErrors} consecutive errors - pausing ${options.errorPauseMs}ms...`);
+          await page.waitForTimeout(options.errorPauseMs);
+          consecutiveErrors = 0;
+        }
+        continue;
+      }
+      consecutiveErrors = 0;
+
+      await scrollProfileToBottom(page);
+      await page.waitForTimeout(500);
+
+      const profile = await scrapeProfile(page);
+
+      const details = await scrapeContactDetails(page);
+      const hasData = !!(details.emails.length || details.phones.length || details.location);
+      const value = buildContactDetailsValue(details, personUrl);
+      if (!hasData) urlFallback++;
+
+      const row = idRowMap.get(contact.id) || { uniqueId: contact.id, name: contact.name || '' };
+      row.name = row.name || profile.name || contact.name || '';
+      row.title = row.title || profile.title || '';
+      row.company = row.company || profile.company || '';
+      row.type = profile.type || row.type || '';
+      row.seniorityLevel = profile.seniorityLevel || row.seniorityLevel || '';
+      row.companyIdentity = profile.companyIdentity || row.companyIdentity || '';
+      row.companyIndustry = profile.companyIndustry || row.companyIndustry || '';
+      row.industry = profile.industry || row.industry || '';
+      row.sectors = (profile.sectors && profile.sectors.length) ? profile.sectors.join(', ') : (row.sectors || '');
+      row.department = profile.department || row.department || '';
+      row.companyHQ = profile.companyHQ || row.companyHQ || '';
+      row.country = profile.country || row.country || '';
+      row.contactDetails = value;
+
+      if (options.dryRun) {
+        log(`[DRY-RUN] ${row.name || '(no name)'} (${row.uniqueId}) country="${row.country}" -> ${value.replace(/\n/g, ' | ').slice(0, 120)}`);
+      } else {
+        outputRows.push(row);
+        await saveOutput(outputRows);
+        collected++;
+        log(`[MONITOR] ${row.name || '(no name)'} -> ${value.replace(/\n/g, ' | ').slice(0, 90)}`);
+      }
+
+      sincePause++;
+      if (sincePause >= options.pauseEvery) {
+        log(`[MONITOR] Pausing ${options.pauseMs}ms after ${sincePause} leads...`);
+        await page.waitForTimeout(options.pauseMs);
+        sincePause = 0;
+      }
+      await page.waitForTimeout(options.delayMs);
+    }
+
+    if (!options.dryRun && outputRows.length) {
       await saveOutput(outputRows);
-      collected++;
-      log(`[MONITOR] ${row.name || '(no name)'} -> ${value.replace(/\n/g, ' | ').slice(0, 90)}`);
+      log(`[MONITOR] Saved ${outputRows.length} total rows to ${OUT_FILE}`);
     }
 
-    sincePause++;
-    if (sincePause >= options.pauseEvery) {
-      log(`[MONITOR] Pausing ${options.pauseMs}ms after ${sincePause} leads...`);
-      await page.waitForTimeout(options.pauseMs);
-      sincePause = 0;
-    }
-    await page.waitForTimeout(options.delayMs);
-  }
-
-  if (!options.dryRun && outputRows.length) {
-    await saveOutput(outputRows);
-    log(`[MONITOR] Saved ${outputRows.length} total rows to ${OUT_FILE}`);
-  }
-
-  const sheetUrl = readGoogleSheetUrl();
-  if (!options.dryRun && outputRows.length && sheetUrl) {
-    if (isConfigured(sheetUrl)) {
+    if (!options.dryRun && outputRows.length && sheetConfigured) {
       try {
-        const r = await writeLeadsToSheet(sheetUrl, outputRows);
-        log(`[SHEETS] Wrote ${r.rowCount} rows to Google Sheet "${r.sheetTitle}": ${r.url}`);
+        await writeTab(sheetUrl, CONTACTS_TAB, outputRows);
+        log(`[SHEETS] Wrote ${outputRows.length} rows to Google Sheet "${CONTACTS_TAB}"`);
       } catch (e) {
         log(`[SHEETS] Could not write to Google Sheet: ${e.message}`);
       }
-    } else {
-      log('[SHEETS] Sheet URL set but service account credentials missing; skipping Google Sheets write.');
+    }
+  } finally {
+    if (browser) {
+      await browser.close().catch(() => {});
+    }
+    if (lockOwner) {
+      await releaseRunLock(sheetUrl, lockOwner);
+      log('[LOCK] Released run lock');
     }
   }
-
-  await browser.close();
 
   const summary = {
     contacts: contacts.length,

@@ -1,25 +1,60 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const { getVisiblePeople, scrollToLoadMore } = require('./scrapeResultsList');
 const { scrapeProfile } = require('./scrapeProfile');
 const { connectPerson, closePanel } = require('./connectPerson');
 const { isAllowed } = require('./countryFilter');
 const { DedupeTracker } = require('./dedupe');
-const { appendRow, saveErrorScreenshot, LOG_FILE } = require('./logger');
+const { appendRow, readRow, saveErrorScreenshot, LOG_FILE } = require('./logger');
 const { gotoRetry } = require('./navigation');
+const {
+  readTab,
+  appendTab,
+  acquireRunLock,
+  releaseRunLock,
+  isConfigured,
+  LEADS_LOG_TAB
+} = require('./googleSheets');
+
+const CONFIG_PATH = path.join(__dirname, '..', 'config', 'config.json');
 
 const START_URL = 'https://connect.onegiantleap.com/event/leap2026/people/RXZlbnRWaWV3XzIwNzA1NzI=';
 const BASE_URL = 'https://connect.onegiantleap.com';
 const CDP_URL = 'http://localhost:9222';
 
+function readGoogleSheetUrl() {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+    return String(cfg.googleSheetUrl || '').trim();
+  } catch (e) {
+    return '';
+  }
+}
+
+function addHandledLeads(set, rows) {
+  for (const r of rows) {
+    const uniqueId = String(r.uniqueId || '');
+    if (!uniqueId || uniqueId === 'undefined' || uniqueId === '__init__') continue;
+    const status = String(r.status || '').toLowerCase();
+    if (status === 'success') {
+      set.add(uniqueId);
+    } else if (status === 'skipped-country') {
+      const country = String(r.country || '').trim();
+      const hq = String(r.companyHQ || '').trim();
+      if (country || hq) set.add(uniqueId);
+    }
+  }
+}
+
 async function loadExistingLeads(log) {
   const logFile = path.join(__dirname, '..', 'output', 'leads_log.xlsx');
 
   if (!fs.existsSync(logFile)) {
-    log('[DEDUPE] No existing log file found, starting fresh');
-    return new Set();
+    log('[DEDUPE] No existing local log file found');
+    return [];
   }
 
   try {
@@ -27,32 +62,15 @@ async function loadExistingLeads(log) {
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.readFile(logFile);
     const worksheet = workbook.getWorksheet('Leads');
-
-    const seenIds = new Set();
-
+    const rows = [];
     worksheet.eachRow((row, rowNumber) => {
-      if (rowNumber > 1) {
-        const uniqueId = row.getCell(1).value;
-        const status = String(row.getCell(12).value || '').toLowerCase();
-        if (!uniqueId || uniqueId === '__init__') return;
-
-        if (status === 'success') {
-          seenIds.add(String(uniqueId));
-        } else if (status === 'skipped-country') {
-          const country = String(row.getCell(17).value || '').trim();
-          const hq = String(row.getCell(16).value || '').trim();
-          if (country || hq) {
-            seenIds.add(String(uniqueId));
-          }
-        }
-      }
+      if (rowNumber > 1) rows.push(readRow(row));
     });
-
-    log(`[DEDUPE] Loaded ${seenIds.size} handled leads (success + non-empty skipped-country)`);
-    return seenIds;
+    log(`[DEDUPE] Loaded ${rows.length} rows from local log`);
+    return rows;
   } catch (error) {
-    log(`[DEDUPE] Error reading log file: ${error.message}`);
-    return new Set();
+    log(`[DEDUPE] Error reading local log: ${error.message}`);
+    return [];
   }
 }
 
@@ -121,11 +139,37 @@ async function startConnections(config, events = {}) {
   };
 
   const dedupe = new DedupeTracker();
-  dedupe.seenIds = await loadExistingLeads(log);
+  dedupe.seenIds = new Set();
+
+  const sheetUrl = readGoogleSheetUrl();
+  const sheetConfigured = sheetUrl && isConfigured(sheetUrl);
+  const sheetLogRows = [];
+  let lockOwner = null;
+  const recordRow = async (data) => {
+    await appendRow(data);
+    sheetLogRows.push(data);
+  };
 
   let browser;
 
   try {
+    addHandledLeads(dedupe.seenIds, await loadExistingLeads(log));
+
+    if (sheetConfigured) {
+      lockOwner = `${os.hostname()}:connections:${Date.now()}`;
+      const gotLock = await acquireRunLock(sheetUrl, lockOwner).catch((e) => {
+        log(`[LOCK] Error acquiring lock: ${e.message}`);
+        return false;
+      });
+      if (!gotLock) {
+        throw new Error('Another machine is currently running a job (run-lock held). Refusing to start.');
+      }
+      log('[LOCK] Acquired run lock');
+      addHandledLeads(dedupe.seenIds, await readTab(sheetUrl, LEADS_LOG_TAB));
+    }
+
+    log(`[DEDUPE] Loaded ${dedupe.seenIds.size} handled leads (local + sheet)`);
+
     log('[MAIN] Connecting to your Chrome browser...');
     log(`[MAIN] Connecting over CDP: ${CDP_URL}`);
     log('='.repeat(60));
@@ -250,7 +294,7 @@ async function startConnections(config, events = {}) {
             stats.skipped++;
             profileData.status = 'skipped-country';
             profileData.timestamp = new Date().toISOString();
-            await appendRow(profileData);
+            await recordRow(profileData);
             log(`[MAIN] Skipped (country filter): ${profileData.name} (Country="${profileData.country}", HQ="${profileData.companyHQ}")`);
             await gotoList(page, listUrl);
             continue;
@@ -281,7 +325,7 @@ async function startConnections(config, events = {}) {
 
         await saveErrorScreenshot(page, person.id, error.message);
 
-        await appendRow({
+        await recordRow({
           uniqueId: person.id,
           name: profileData.name,
           status: 'error',
@@ -305,6 +349,20 @@ async function startConnections(config, events = {}) {
   } finally {
     if (browser) {
       await browser.close();
+    }
+
+    if (sheetConfigured && sheetLogRows.length) {
+      try {
+        await appendTab(sheetUrl, LEADS_LOG_TAB, sheetLogRows);
+        log(`[SHEETS] Appended ${sheetLogRows.length} rows to leads log in sheet`);
+      } catch (e) {
+        log(`[SHEETS] Could not append to sheet: ${e.message}`);
+      }
+    }
+
+    if (lockOwner) {
+      await releaseRunLock(sheetUrl, lockOwner);
+      log('[LOCK] Released run lock');
     }
 
     log('='.repeat(60));
