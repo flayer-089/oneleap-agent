@@ -8,7 +8,6 @@ const SCOPES = ['https://www.googleapis.com/auth/spreadsheets'];
 
 const CONTACTS_TAB = 'Leads';
 const LEADS_LOG_TAB = 'Leads Log';
-const CONTROL_TAB = 'Control';
 
 function loadCredentials() {
   if (!fs.existsSync(CREDS_FILE)) return null;
@@ -122,47 +121,6 @@ async function appendTab(sheetUrl, title, rows) {
   });
 }
 
-async function acquireRunLock(sheetUrl, owner, ttlMs = 2 * 60 * 60 * 1000) {
-  const sheetId = sheetIdFromUrl(sheetUrl);
-  const sheets = await getSheetsClient();
-  await ensureTab(sheets, sheetId, CONTROL_TAB);
-  const res = await sheets.spreadsheets.values
-    .get({ spreadsheetId: sheetId, range: `'${CONTROL_TAB}'!A1:B1` })
-    .catch(() => null);
-  const row = res && res.data.values ? res.data.values[0] : [];
-  const [rawOwner, rawTime] = row;
-  const now = Date.now();
-  if (rawOwner) {
-    const startedAt = parseInt(rawTime, 10) || now;
-    if (rawOwner !== owner && now - startedAt < ttlMs) return false;
-  }
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: sheetId,
-    range: `'${CONTROL_TAB}'!A1:B1`,
-    valueInputOption: 'RAW',
-    requestBody: { values: [[owner, String(now)]] }
-  });
-  return true;
-}
-
-async function releaseRunLock(sheetUrl, owner) {
-  try {
-    const sheetId = sheetIdFromUrl(sheetUrl);
-    const sheets = await getSheetsClient();
-    const res = await sheets.spreadsheets.values
-      .get({ spreadsheetId: sheetId, range: `'${CONTROL_TAB}'!A1:B1` })
-      .catch(() => null);
-    const row = res && res.data.values ? res.data.values[0] : [];
-    if (row[0] === owner) {
-      await sheets.spreadsheets.values
-        .clear({ spreadsheetId: sheetId, range: `'${CONTROL_TAB}'!A1:B1` })
-        .catch(() => {});
-    }
-  } catch (e) {
-    console.log('[LOCK] Could not release lock:', e.message);
-  }
-}
-
 module.exports = {
   loadCredentials,
   sheetIdFromUrl,
@@ -171,8 +129,6 @@ module.exports = {
   readTab,
   writeTab,
   appendTab,
-  acquireRunLock,
-  releaseRunLock,
   CREDS_FILE,
   CONTACTS_TAB,
   LEADS_LOG_TAB

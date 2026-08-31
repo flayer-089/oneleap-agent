@@ -1,7 +1,6 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 
 const { getVisiblePeople, scrollToLoadMore } = require('./scrapeResultsList');
 const { scrapeProfile } = require('./scrapeProfile');
@@ -10,14 +9,7 @@ const { isAllowed } = require('./countryFilter');
 const { DedupeTracker } = require('./dedupe');
 const { appendRow, readRow, saveErrorScreenshot, LOG_FILE } = require('./logger');
 const { gotoRetry } = require('./navigation');
-const {
-  readTab,
-  appendTab,
-  acquireRunLock,
-  releaseRunLock,
-  isConfigured,
-  LEADS_LOG_TAB
-} = require('./googleSheets');
+const { readTab, appendTab, isConfigured, LEADS_LOG_TAB } = require('./googleSheets');
 
 const CONFIG_PATH = path.join(__dirname, '..', 'config', 'config.json');
 
@@ -144,7 +136,6 @@ async function startConnections(config, events = {}) {
   const sheetUrl = readGoogleSheetUrl();
   const sheetConfigured = sheetUrl && isConfigured(sheetUrl);
   const sheetLogRows = [];
-  let lockOwner = null;
   const recordRow = async (data) => {
     await appendRow(data);
     sheetLogRows.push(data);
@@ -156,16 +147,11 @@ async function startConnections(config, events = {}) {
     addHandledLeads(dedupe.seenIds, await loadExistingLeads(log));
 
     if (sheetConfigured) {
-      lockOwner = `${os.hostname()}:connections:${Date.now()}`;
-      const gotLock = await acquireRunLock(sheetUrl, lockOwner).catch((e) => {
-        log(`[LOCK] Error acquiring lock: ${e.message}`);
-        return false;
-      });
-      if (!gotLock) {
-        throw new Error('Another machine is currently running a job (run-lock held). Refusing to start.');
+      try {
+        addHandledLeads(dedupe.seenIds, await readTab(sheetUrl, LEADS_LOG_TAB));
+      } catch (e) {
+        log(`[DEDUPE] Could not read leads log from sheet: ${e.message}`);
       }
-      log('[LOCK] Acquired run lock');
-      addHandledLeads(dedupe.seenIds, await readTab(sheetUrl, LEADS_LOG_TAB));
     }
 
     log(`[DEDUPE] Loaded ${dedupe.seenIds.size} handled leads (local + sheet)`);
@@ -348,7 +334,7 @@ async function startConnections(config, events = {}) {
     stats.error = error.message;
   } finally {
     if (browser) {
-      await browser.close();
+      await browser.close().catch(() => {});
     }
 
     if (sheetConfigured && sheetLogRows.length) {
@@ -358,11 +344,6 @@ async function startConnections(config, events = {}) {
       } catch (e) {
         log(`[SHEETS] Could not append to sheet: ${e.message}`);
       }
-    }
-
-    if (lockOwner) {
-      await releaseRunLock(sheetUrl, lockOwner);
-      log('[LOCK] Released run lock');
     }
 
     log('='.repeat(60));

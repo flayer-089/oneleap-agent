@@ -1,7 +1,6 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const ExcelJS = require('exceljs');
 const {
   getContactPeople,
@@ -12,15 +11,7 @@ const {
 } = require('./scrapeContacts');
 const { scrapeProfile } = require('./scrapeProfile');
 const { loadWorkbook, buildIdRowMap, readRow, COLUMNS } = require('./logger');
-const {
-  readTab,
-  writeTab,
-  acquireRunLock,
-  releaseRunLock,
-  isConfigured,
-  LEADS_LOG_TAB,
-  CONTACTS_TAB
-} = require('./googleSheets');
+const { readTab, writeTab, isConfigured, LEADS_LOG_TAB, CONTACTS_TAB } = require('./googleSheets');
 const { gotoRetry } = require('./navigation');
 
 const CDP_URL = 'http://localhost:9222';
@@ -103,7 +94,6 @@ async function startMonitor(opts = {}, events = {}) {
 
   const sheetUrl = readGoogleSheetUrl();
   const sheetConfigured = sheetUrl && isConfigured(sheetUrl);
-  let lockOwner = null;
   let browser;
 
   let contacts = [];
@@ -115,18 +105,6 @@ async function startMonitor(opts = {}, events = {}) {
   let outputRows = [];
 
   try {
-    if (sheetConfigured) {
-      lockOwner = `${os.hostname()}:monitor:${Date.now()}`;
-      const gotLock = await acquireRunLock(sheetUrl, lockOwner).catch((e) => {
-        log(`[LOCK] Error acquiring lock: ${e.message}`);
-        return false;
-      });
-      if (!gotLock) {
-        throw new Error('Another machine is currently running a job (run-lock held). Refusing to start.');
-      }
-      log('[LOCK] Acquired run lock');
-    }
-
     log('[MONITOR] Connecting to Chrome on CDP ' + CDP_URL + ' ...');
     browser = await chromium.connectOverCDP(CDP_URL);
     const context = browser.contexts()[0];
@@ -264,10 +242,6 @@ async function startMonitor(opts = {}, events = {}) {
   } finally {
     if (browser) {
       await browser.close().catch(() => {});
-    }
-    if (lockOwner) {
-      await releaseRunLock(sheetUrl, lockOwner);
-      log('[LOCK] Released run lock');
     }
   }
 
